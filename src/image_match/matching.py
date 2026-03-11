@@ -116,7 +116,12 @@ def match_histograms_quantized(
     source_lab: np.ndarray,
     reference_lab: np.ndarray,
 ) -> np.ndarray:
-    """Match per-channel histograms of Lab images using quantized bincount.
+    """Match Lab images: mean/std transfer for L, histogram matching for a*b*.
+
+    The L channel uses a linear mean/std transform to correct exposure while
+    preserving the original tonal shape — histogram matching is too aggressive
+    for luminance and destroys highlight gradients. The a* and b* channels
+    use full histogram matching for accurate color balance correction.
 
     Parameters
     ----------
@@ -131,7 +136,23 @@ def match_histograms_quantized(
         Matched L*a*b* image as float32.
     """
     result = np.empty_like(source_lab)
-    for ch in range(3):
+
+    # L channel: linear mean/std transfer preserves tonal gradients
+    src_L = source_lab[:, :, 0]
+    ref_L = reference_lab[:, :, 0]
+    src_mean, src_std = src_L.mean(), src_L.std()
+    ref_mean, ref_std = ref_L.mean(), ref_L.std()
+
+    if src_std > 0:
+        result[:, :, 0] = (src_L - src_mean) * (ref_std / src_std) + ref_mean
+    else:
+        result[:, :, 0] = src_L + (ref_mean - src_mean)
+
+    # Clamp L to valid range
+    np.clip(result[:, :, 0], 0.0, 100.0, out=result[:, :, 0])
+
+    # a* and b* channels: full histogram matching for color balance
+    for ch in (1, 2):
         result[:, :, ch] = _match_channel_quantized(
             source_lab[:, :, ch],
             reference_lab[:, :, ch],
