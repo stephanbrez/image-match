@@ -138,9 +138,47 @@ def match_histograms_quantized(
     return result
 
 
+def _soft_clip_lab(lab: np.ndarray) -> np.ndarray:
+    """Soft-clip L*a*b* values to stay within sRGB gamut.
+
+    Uses a shoulder curve on the L channel to compress highlights and shadows
+    instead of hard-clipping after lab2rgb conversion. This preserves tonal
+    separation in extreme regions.
+
+    Parameters
+    ----------
+    lab : np.ndarray
+        Image in L*a*b* (float32, shape H×W×3).
+
+    Returns
+    -------
+    np.ndarray
+        Soft-clipped L*a*b* image as float32.
+    """
+    result = lab.copy()
+    L = result[:, :, 0]
+
+    # Shoulder compression for highlights (L > 90) and shadows (L < 10)
+    # using a smooth tanh-based curve that compresses toward the boundary
+    highlight_mask = L > 90.0
+    if highlight_mask.any():
+        excess = L[highlight_mask] - 90.0
+        # Compress excess into 0..10 range using tanh
+        L[highlight_mask] = 90.0 + 10.0 * np.tanh(excess / 10.0)
+
+    shadow_mask = L < 10.0
+    if shadow_mask.any():
+        deficit = 10.0 - L[shadow_mask]
+        L[shadow_mask] = 10.0 - 10.0 * np.tanh(deficit / 10.0)
+
+    result[:, :, 0] = L
+    return result
+
+
 def match_to_reference(
     image: np.ndarray,
     lab_reference: np.ndarray,
+    strength: float = 1.0,
 ) -> np.ndarray:
     """Match the exposure and color balance of an image to a reference.
 
@@ -148,12 +186,18 @@ def match_to_reference(
     histogram matching against a pre-converted reference. This independently
     aligns luminance (L), green-red (a*), and blue-yellow (b*) distributions.
 
+    A soft-clip is applied to the L channel to prevent blown highlights and
+    crushed shadows. The strength parameter controls blending between the
+    original and matched image.
+
     Parameters
     ----------
     image : np.ndarray
         Source image to transform (uint8 RGB).
     lab_reference : np.ndarray
         Reference image already converted to L*a*b* (float32).
+    strength : float
+        Blend factor between original (0.0) and fully matched (1.0).
 
     Returns
     -------
@@ -163,6 +207,10 @@ def match_to_reference(
     lab_image = rgb_to_lab(image)
 
     matched_lab = match_histograms_quantized(lab_image, lab_reference)
+    matched_lab = _soft_clip_lab(matched_lab)
+
+    if strength < 1.0:
+        matched_lab = lab_image + strength * (matched_lab - lab_image)
 
     matched_rgb = skimage.color.lab2rgb(matched_lab)
     return np.clip(matched_rgb * 255, 0, 255).astype(np.uint8)

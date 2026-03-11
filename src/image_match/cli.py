@@ -61,6 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
         help='Suffix before extension when no --output-dir (default: "_matched").',
     )
     parser.add_argument(
+        "--strength",
+        type=float,
+        default=1.0,
+        help=(
+            "Blend strength between original and matched image."
+            " 0.0 = no change, 1.0 = full match (default: 1.0)."
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         "-j",
         type=int,
@@ -132,10 +141,11 @@ def _process_one(
     img_path: pathlib.Path,
     out_path: pathlib.Path,
     lab_reference: np.ndarray,
+    strength: float,
 ) -> None:
     """Load, match, and save a single image (worker function)."""
     img = image_match.matching.load_image(img_path)
-    matched = image_match.matching.match_to_reference(img, lab_reference)
+    matched = image_match.matching.match_to_reference(img, lab_reference, strength)
     image_match.matching.save_image(matched, out_path)
 
 
@@ -143,6 +153,14 @@ def run() -> None:
     """Parse arguments and run the batch matching loop."""
     parser = build_parser()
     args = parser.parse_args()
+
+    # ─── Validate strength ───
+    if not 0.0 <= args.strength <= 1.0:
+        print(
+            "🚨 ERROR: --strength must be between 0.0 and 1.0.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # ─── Validate source ───
     source_path: pathlib.Path = args.source.resolve()
@@ -188,7 +206,7 @@ def run() -> None:
             try:
                 if args.verbose:
                     print(f"🔍 Processing: {img_path}", file=sys.stderr)
-                _process_one(img_path, out_path, lab_reference)
+                _process_one(img_path, out_path, lab_reference, args.strength)
                 if args.verbose:
                     print(f"✅ SUCCESS: {out_path}", file=sys.stderr)
             except Exception as exc:
@@ -203,7 +221,8 @@ def run() -> None:
         ) as executor:
             future_to_path = {
                 executor.submit(
-                    _process_one, img_path, out_path, lab_reference
+                    _process_one, img_path, out_path, lab_reference,
+                    args.strength,
                 ): img_path
                 for img_path, out_path in work
             }
