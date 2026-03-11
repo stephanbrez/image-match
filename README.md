@@ -5,21 +5,26 @@ Match the exposure and color balance of images to a reference image.
 Given a source/reference image and one or more destination images (or a
 directory), `image-match` computes a unique per-image transformation so each
 destination's exposure and color balance matches the reference. The goal is
-visual consistency across a set — each image gets its own CDF-based lookup
-table, not one uniform transform.
+visual consistency across a set — each image gets its own correction, not one
+uniform transform.
 
 ## How It Works
 
 Images are converted to **L\*a\*b\* color space**, which separates luminance (L)
-from color (a\*=green-red, b\*=blue-yellow). Per-channel histogram matching
-aligns each channel independently, handling both exposure and color balance
-without the cross-channel artifacts that RGB matching can produce.
+from color (a\*=green-red, b\*=blue-yellow). Each channel is matched
+independently, avoiding the cross-channel artifacts that RGB matching can
+produce.
 
-A **soft-clip** is applied to the L channel after matching to prevent blown
-highlights and crushed shadows — extreme luminance values are compressed with a
-tanh shoulder curve instead of hard-clipped at the sRGB boundary. The
-`--strength` flag lets you blend between the original and matched result for
-finer control.
+- **L channel (exposure):** mean/std linear transfer — corrects overall
+  brightness while preserving the original tonal shape and highlight detail.
+- **a\*/b\* channels (color balance):** histogram matching via quantized CDF —
+  accurately aligns color distributions.
+
+A **detail-preserving transfer** separates each channel into tone (low
+frequency) and texture (high frequency), applies the correction to the tone
+layer only, then recombines. This prevents the flattening of local contrast
+that naive histogram matching can cause. The `--strength` flag lets you blend
+between the original and matched result for finer control.
 
 ## Requirements
 

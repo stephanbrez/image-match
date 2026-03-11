@@ -142,10 +142,13 @@ def _process_one(
     out_path: pathlib.Path,
     lab_reference: np.ndarray,
     strength: float,
+    verbose: bool,
 ) -> None:
     """Load, match, and save a single image (worker function)."""
     img = image_match.matching.load_image(img_path)
-    matched = image_match.matching.match_to_reference(img, lab_reference, strength)
+    matched = image_match.matching.match_to_reference(
+        img, lab_reference, strength, verbose=verbose,
+    )
     image_match.matching.save_image(matched, out_path)
 
 
@@ -206,7 +209,7 @@ def run() -> None:
             try:
                 if args.verbose:
                     print(f"🔍 Processing: {img_path}", file=sys.stderr)
-                _process_one(img_path, out_path, lab_reference, args.strength)
+                _process_one(img_path, out_path, lab_reference, args.strength, args.verbose)
                 if args.verbose:
                     print(f"✅ SUCCESS: {out_path}", file=sys.stderr)
             except Exception as exc:
@@ -222,7 +225,7 @@ def run() -> None:
             future_to_path = {
                 executor.submit(
                     _process_one, img_path, out_path, lab_reference,
-                    args.strength,
+                    args.strength, args.verbose,
                 ): img_path
                 for img_path, out_path in work
             }

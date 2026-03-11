@@ -1,5 +1,7 @@
 """Core image matching logic using histogram matching in L*a*b* color space."""
 
+import warnings
+
 import numpy as np
 import pathlib
 
@@ -213,6 +215,7 @@ def match_to_reference(
     image: np.ndarray,
     lab_reference: np.ndarray,
     strength: float = 1.0,
+    verbose: bool = False,
 ) -> np.ndarray:
     """Match the exposure and color balance of an image to a reference.
 
@@ -232,6 +235,8 @@ def match_to_reference(
         Reference image already converted to L*a*b* (float32).
     strength : float
         Blend factor between original (0.0) and fully matched (1.0).
+    verbose : bool
+        If False, suppress gamut-clipping warnings from lab2rgb.
 
     Returns
     -------
@@ -246,7 +251,11 @@ def match_to_reference(
     if strength < 1.0:
         matched_lab = lab_image + strength * (matched_lab - lab_image)
 
-    matched_rgb = skimage.color.lab2rgb(matched_lab)
+    with warnings.catch_warnings():
+        if not verbose:
+            warnings.filterwarnings("ignore", message=".*negative Z values.*")
+        matched_rgb = skimage.color.lab2rgb(matched_lab)
+
     return np.clip(matched_rgb * 255, 0, 255).astype(np.uint8)
 
 
