@@ -1,0 +1,18 @@
+[project]
+name = "image-match"
+version = "0.1.0"
+description = "Match exposure and color balance of images to a reference"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "scikit-image>=0.24",
+    "Pillow>=11.0",
+    "numpy>=2.0",
+]
+
+[project.scripts]
+image-match = "image_match:main"
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
