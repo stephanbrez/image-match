@@ -4,6 +4,7 @@ import numpy as np
 import pathlib
 
 import PIL.Image
+import scipy.ndimage
 import skimage.color
 
 
@@ -138,40 +139,52 @@ def match_histograms_quantized(
     return result
 
 
-def _soft_clip_lab(lab: np.ndarray) -> np.ndarray:
-    """Soft-clip L*a*b* values to stay within sRGB gamut.
+def _detail_preserving_transfer(
+    source_lab: np.ndarray,
+    matched_lab: np.ndarray,
+    sigma: float = 50.0,
+) -> np.ndarray:
+    """Combine matched global tone with source local detail.
 
-    Uses a shoulder curve on the L channel to compress highlights and shadows
-    instead of hard-clipping after lab2rgb conversion. This preserves tonal
-    separation in extreme regions.
+    Histogram matching can collapse many distinct values into a narrow range,
+    destroying local contrast (detail). This function extracts the local
+    detail (high-frequency) from the source and the global tone
+    (low-frequency) from the matched result, then recombines them.
+
+    For each Lab channel:
+        detail   = source - blur(source)        # local texture
+        tone     = blur(matched)                 # global color shift
+        result   = tone + detail                 # recombined
 
     Parameters
     ----------
-    lab : np.ndarray
-        Image in L*a*b* (float32, shape H×W×3).
+    source_lab : np.ndarray
+        Original image in L*a*b* (float32).
+    matched_lab : np.ndarray
+        Histogram-matched image in L*a*b* (float32).
+    sigma : float
+        Gaussian blur radius for tone/detail separation.
 
     Returns
     -------
     np.ndarray
-        Soft-clipped L*a*b* image as float32.
+        Detail-preserved L*a*b* image as float32.
     """
-    result = lab.copy()
-    L = result[:, :, 0]
+    result = np.empty_like(source_lab)
+    for ch in range(3):
+        source_ch = source_lab[:, :, ch]
+        matched_ch = matched_lab[:, :, ch]
 
-    # Shoulder compression for highlights (L > 90) and shadows (L < 10)
-    # using a smooth tanh-based curve that compresses toward the boundary
-    highlight_mask = L > 90.0
-    if highlight_mask.any():
-        excess = L[highlight_mask] - 90.0
-        # Compress excess into 0..10 range using tanh
-        L[highlight_mask] = 90.0 + 10.0 * np.tanh(excess / 10.0)
+        source_smooth = scipy.ndimage.gaussian_filter(
+            source_ch, sigma=sigma,
+        )
+        matched_smooth = scipy.ndimage.gaussian_filter(
+            matched_ch, sigma=sigma,
+        )
 
-    shadow_mask = L < 10.0
-    if shadow_mask.any():
-        deficit = 10.0 - L[shadow_mask]
-        L[shadow_mask] = 10.0 - 10.0 * np.tanh(deficit / 10.0)
+        detail = source_ch - source_smooth
+        result[:, :, ch] = matched_smooth + detail
 
-    result[:, :, 0] = L
     return result
 
 
@@ -183,12 +196,12 @@ def match_to_reference(
     """Match the exposure and color balance of an image to a reference.
 
     Converts the source image to L*a*b* color space and performs per-channel
-    histogram matching against a pre-converted reference. This independently
-    aligns luminance (L), green-red (a*), and blue-yellow (b*) distributions.
+    histogram matching against a pre-converted reference. Local detail from
+    the source is preserved by separating tone and texture, applying the
+    match to the tone layer only, then recombining.
 
-    A soft-clip is applied to the L channel to prevent blown highlights and
-    crushed shadows. The strength parameter controls blending between the
-    original and matched image.
+    The strength parameter controls blending between the original and
+    matched image.
 
     Parameters
     ----------
@@ -207,7 +220,7 @@ def match_to_reference(
     lab_image = rgb_to_lab(image)
 
     matched_lab = match_histograms_quantized(lab_image, lab_reference)
-    matched_lab = _soft_clip_lab(matched_lab)
+    matched_lab = _detail_preserving_transfer(lab_image, matched_lab)
 
     if strength < 1.0:
         matched_lab = lab_image + strength * (matched_lab - lab_image)
