@@ -114,16 +114,46 @@ def _match_channel_quantized(
     return matched.reshape(source.shape)
 
 
-def match_histograms_quantized(
+def _mean_std_transfer(
+    source: np.ndarray,
+    reference: np.ndarray,
+) -> np.ndarray:
+    """Transfer the mean and standard deviation from reference to source.
+
+    Applies a linear transform that shifts and scales the source distribution
+    to match the reference's first two moments, preserving the original
+    distribution shape.
+
+    Parameters
+    ----------
+    source : np.ndarray
+        Source channel (2D float32).
+    reference : np.ndarray
+        Reference channel (2D float32).
+
+    Returns
+    -------
+    np.ndarray
+        Transferred channel as float32.
+    """
+    src_mean, src_std = source.mean(), source.std()
+    ref_mean, ref_std = reference.mean(), reference.std()
+
+    if src_std > 0:
+        return (source - src_mean) * (ref_std / src_std) + ref_mean
+    return source + (ref_mean - src_mean)
+
+
+def match_lab(
     source_lab: np.ndarray,
     reference_lab: np.ndarray,
 ) -> np.ndarray:
-    """Match Lab images: mean/std transfer for L, histogram matching for a*b*.
+    """Match Lab images using mean/std transfer on all channels.
 
-    The L channel uses a linear mean/std transform to correct exposure while
-    preserving the original tonal shape — histogram matching is too aggressive
-    for luminance and destroys highlight gradients. The a* and b* channels
-    use full histogram matching for accurate color balance correction.
+    Uses a linear mean/std transform on each channel to correct exposure and
+    color balance while preserving the original distribution shapes.
+    Histogram matching is too aggressive — it forces exact CDF alignment,
+    which over-corrects and destroys gradients.
 
     Parameters
     ----------
@@ -139,26 +169,15 @@ def match_histograms_quantized(
     """
     result = np.empty_like(source_lab)
 
-    # L channel: linear mean/std transfer preserves tonal gradients
-    src_L = source_lab[:, :, 0]
-    ref_L = reference_lab[:, :, 0]
-    src_mean, src_std = src_L.mean(), src_L.std()
-    ref_mean, ref_std = ref_L.mean(), ref_L.std()
-
-    if src_std > 0:
-        result[:, :, 0] = (src_L - src_mean) * (ref_std / src_std) + ref_mean
-    else:
-        result[:, :, 0] = src_L + (ref_mean - src_mean)
+    for ch in range(3):
+        result[:, :, ch] = _mean_std_transfer(
+            source_lab[:, :, ch],
+            reference_lab[:, :, ch],
+        )
 
     # Clamp L to valid range
     np.clip(result[:, :, 0], 0.0, 100.0, out=result[:, :, 0])
 
-    # a* and b* channels: full histogram matching for color balance
-    for ch in (1, 2):
-        result[:, :, ch] = _match_channel_quantized(
-            source_lab[:, :, ch],
-            reference_lab[:, :, ch],
-        )
     return result
 
 
@@ -245,7 +264,7 @@ def match_to_reference(
     """
     lab_image = rgb_to_lab(image)
 
-    matched_lab = match_histograms_quantized(lab_image, lab_reference)
+    matched_lab = match_lab(lab_image, lab_reference)
     matched_lab = _detail_preserving_transfer(lab_image, matched_lab)
 
     if strength < 1.0:
