@@ -129,9 +129,11 @@ def run() -> None:
         sys.exit(1)
 
     # ─── Resolve destination images ───
-    dest_images = resolve_images(
-        [p.resolve() for p in args.dest],
-    )
+    dest_images = [
+        p
+        for p in resolve_images([p.resolve() for p in args.dest])
+        if p != source_path
+    ]
     if not dest_images:
         print("🚨 ERROR: No valid destination images found.", file=sys.stderr)
         sys.exit(1)
