@@ -1,4 +1,4 @@
-"""Core image matching logic using histogram matching in L*a*b* color space."""
+"""Core image matching logic using mean/std transfer in L*a*b* color space."""
 
 import warnings
 
@@ -53,65 +53,6 @@ def rgb_to_lab(image: np.ndarray) -> np.ndarray:
     """
     float_image = image.astype(np.float32) / 255.0
     return skimage.color.rgb2lab(float_image).astype(np.float32)
-
-
-def _match_channel_quantized(
-    source: np.ndarray,
-    reference: np.ndarray,
-    bins: int = 256,
-) -> np.ndarray:
-    """Match the histogram of a single channel using quantized bincount.
-
-    Bins float values into integer levels, computes CDFs via np.bincount
-    (O(n) instead of the np.unique O(n log n) path), then maps source
-    values through the matched CDF.
-
-    Parameters
-    ----------
-    source : np.ndarray
-        Source channel (2D float32).
-    reference : np.ndarray
-        Reference channel (2D float32).
-    bins : int
-        Number of quantization levels.
-
-    Returns
-    -------
-    np.ndarray
-        Matched channel as float32 with same shape as source.
-    """
-    s_min = min(source.min(), reference.min())
-    s_max = max(source.max(), reference.max())
-    value_range = s_max - s_min
-
-    if value_range == 0:
-        return source.copy()
-
-    scale = (bins - 1) / value_range
-
-    # Quantize to integer bin indices
-    src_idx = np.clip(((source - s_min) * scale).ravel(), 0, bins - 1).astype(np.int32)
-    ref_idx = np.clip(((reference - s_min) * scale).ravel(), 0, bins - 1).astype(np.int32)
-
-    # Build CDFs via bincount (fast O(n) path)
-    src_counts = np.bincount(src_idx, minlength=bins)
-    ref_counts = np.bincount(ref_idx, minlength=bins)
-
-    src_cdf = np.cumsum(src_counts).astype(np.float64)
-    ref_cdf = np.cumsum(ref_counts).astype(np.float64)
-
-    src_cdf /= src_cdf[-1]
-    ref_cdf /= ref_cdf[-1]
-
-    # Build lookup: for each source bin, find the closest reference bin by CDF
-    lookup = np.searchsorted(ref_cdf, src_cdf, side="left")
-    lookup = np.clip(lookup, 0, bins - 1)
-
-    # Map source bins through lookup and convert back to float range
-    matched_idx = lookup[src_idx]
-    matched = matched_idx.astype(np.float32) / scale + s_min
-
-    return matched.reshape(source.shape)
 
 
 def _mean_std_transfer(
@@ -188,10 +129,9 @@ def _detail_preserving_transfer(
 ) -> np.ndarray:
     """Combine matched global tone with source local detail.
 
-    Histogram matching can collapse many distinct values into a narrow range,
-    destroying local contrast (detail). This function extracts the local
-    detail (high-frequency) from the source and the global tone
-    (low-frequency) from the matched result, then recombines them.
+    Extracts the local detail (high-frequency) from the source and the
+    global tone (low-frequency) from the matched result, then recombines
+    them. This preserves local contrast and texture from the original.
 
     For each Lab channel:
         detail   = source - blur(source)        # local texture
@@ -203,7 +143,7 @@ def _detail_preserving_transfer(
     source_lab : np.ndarray
         Original image in L*a*b* (float32).
     matched_lab : np.ndarray
-        Histogram-matched image in L*a*b* (float32).
+        Color-matched image in L*a*b* (float32).
     sigma : float
         Gaussian blur radius for tone/detail separation.
 
@@ -238,13 +178,10 @@ def match_to_reference(
 ) -> np.ndarray:
     """Match the exposure and color balance of an image to a reference.
 
-    Converts the source image to L*a*b* color space and performs per-channel
-    histogram matching against a pre-converted reference. Local detail from
+    Converts the source image to L*a*b* color space and applies a mean/std
+    transfer on each channel to match the reference. Local detail from
     the source is preserved by separating tone and texture, applying the
-    match to the tone layer only, then recombining.
-
-    The strength parameter controls blending between the original and
-    matched image.
+    correction to the tone layer only, then recombining.
 
     Parameters
     ----------
