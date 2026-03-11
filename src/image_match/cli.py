@@ -1,8 +1,12 @@
 """CLI layer for image-match: argparse setup, path resolution, batch loop."""
 
 import argparse
+import concurrent.futures
+import os
 import pathlib
 import sys
+
+import numpy as np
 
 import image_match.matching
 
@@ -55,6 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-s",
         default="_matched",
         help='Suffix before extension when no --output-dir (default: "_matched").',
+    )
+    parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=os.cpu_count(),
+        help="Number of parallel workers (default: CPU count).",
     )
     parser.add_argument(
         "--verbose",
@@ -117,6 +128,17 @@ def compute_output_path(
     return path.with_stem(path.stem + suffix)
 
 
+def _process_one(
+    img_path: pathlib.Path,
+    out_path: pathlib.Path,
+    lab_reference: np.ndarray,
+) -> None:
+    """Load, match, and save a single image (worker function)."""
+    img = image_match.matching.load_image(img_path)
+    matched = image_match.matching.match_to_reference(img, lab_reference)
+    image_match.matching.save_image(matched, out_path)
+
+
 def run() -> None:
     """Parse arguments and run the batch matching loop."""
     parser = build_parser()
@@ -144,29 +166,67 @@ def run() -> None:
         output_dir = output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ─── Load reference image ───
+    # ─── Load reference image and convert to Lab once ───
     if args.verbose:
         print(f"📝 NOTE: Loading reference: {source_path}", file=sys.stderr)
     reference = image_match.matching.load_image(source_path)
+    lab_reference = image_match.matching.rgb_to_lab(reference)
 
-    # ─── Batch loop ───
+    # ─── Build work items ───
+    work = [
+        (img_path, compute_output_path(img_path, output_dir, args.suffix))
+        for img_path in dest_images
+    ]
+
+    # ─── Process images in parallel ───
+    max_workers = min(args.jobs or 1, len(work))
     failures = 0
-    for img_path in dest_images:
-        out_path = compute_output_path(img_path, output_dir, args.suffix)
-        try:
+
+    if max_workers == 1:
+        # Single-worker fast path: no process overhead
+        for img_path, out_path in work:
+            try:
+                if args.verbose:
+                    print(f"🔍 Processing: {img_path}", file=sys.stderr)
+                _process_one(img_path, out_path, lab_reference)
+                if args.verbose:
+                    print(f"✅ SUCCESS: {out_path}", file=sys.stderr)
+            except Exception as exc:
+                failures += 1
+                print(
+                    f"⚠️ WARNING: Failed to process {img_path}: {exc}",
+                    file=sys.stderr,
+                )
+    else:
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=max_workers,
+        ) as executor:
+            future_to_path = {
+                executor.submit(
+                    _process_one, img_path, out_path, lab_reference
+                ): img_path
+                for img_path, out_path in work
+            }
+
             if args.verbose:
-                print(f"🔍 Processing: {img_path}", file=sys.stderr)
-            img = image_match.matching.load_image(img_path)
-            matched = image_match.matching.match_to_reference(img, reference)
-            image_match.matching.save_image(matched, out_path)
-            if args.verbose:
-                print(f"✅ SUCCESS: {out_path}", file=sys.stderr)
-        except Exception as exc:
-            failures += 1
-            print(
-                f"⚠️ WARNING: Failed to process {img_path}: {exc}",
-                file=sys.stderr,
-            )
+                for img_path, _ in work:
+                    print(f"🔍 Processing: {img_path}", file=sys.stderr)
+
+            for future in concurrent.futures.as_completed(future_to_path):
+                img_path = future_to_path[future]
+                try:
+                    future.result()
+                    if args.verbose:
+                        out_path = compute_output_path(
+                            img_path, output_dir, args.suffix
+                        )
+                        print(f"✅ SUCCESS: {out_path}", file=sys.stderr)
+                except Exception as exc:
+                    failures += 1
+                    print(
+                        f"⚠️ WARNING: Failed to process {img_path}: {exc}",
+                        file=sys.stderr,
+                    )
 
     if failures == len(dest_images):
         print("🚨 ERROR: All images failed to process.", file=sys.stderr)
